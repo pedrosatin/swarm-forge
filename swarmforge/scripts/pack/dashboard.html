@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="csrf-token" content="">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SwarmForge Pack</title>
 <style>
@@ -246,6 +247,22 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 </div>
 
 <script>
+(function() {
+  const origFetch = window.fetch;
+  window.fetch = function(url, options) {
+    options = options || {};
+    if (options.method && options.method.toUpperCase() === "POST") {
+      const headers = new Headers(options.headers || {});
+      const token = document.querySelector('meta[name="csrf-token"]')?.content || window.__CSRF_TOKEN__;
+      if (token && !headers.has("X-CSRF-Token")) {
+        headers.set("X-CSRF-Token", token);
+      }
+      options.headers = headers;
+    }
+    return origFetch.call(this, url, options);
+  };
+})();
+
 const $ = (id) => document.getElementById(id);
 
 function displayName(role) {

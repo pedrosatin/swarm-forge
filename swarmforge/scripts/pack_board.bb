@@ -174,12 +174,25 @@
   (when (str/blank? value)
     (exit! 1 (str "Missing " label))))
 
+(defn valid-task-name? [name]
+  (boolean (and (string? name)
+                (not (str/blank? name))
+                (not (str/includes? name "/"))
+                (not (str/includes? name "\\"))
+                (not (str/includes? name ".."))
+                (re-matches #"^[a-zA-Z0-9_.\s-]+$" (str/trim name)))))
+
+(defn require-valid-task-name! [name]
+  (require-value! name "task name")
+  (when-not (valid-task-name? name)
+    (exit! 1 (str "Invalid task name: " name))))
+
 (defn create! [opts]
   (let [name (task-name opts)
         lane (task-lane opts)
         root (resolve-root opts)
         file (tasks-file root)]
-    (require-value! name "task name")
+    (require-valid-task-name! name)
     (require-value! lane "lane")
     (with-board-lock
       root
@@ -200,7 +213,7 @@
 (defn set-lane! [opts lane]
   (let [name (task-name opts)
         file (tasks-file (resolve-root opts))]
-    (require-value! name "task name")
+    (require-valid-task-name! name)
     (require-value! lane "lane")
     (with-board-lock
       (resolve-root opts)
@@ -327,7 +340,7 @@
   (let [name (task-name opts)
         root (resolve-root opts)
         file (tasks-file root)]
-    (require-value! name "task name")
+    (require-valid-task-name! name)
     (with-board-lock
       root
       (fn []
