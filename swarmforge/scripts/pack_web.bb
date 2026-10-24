@@ -805,10 +805,38 @@
      :tasks []
      :work_in_flight (vec (mapcat :work_in_flight projects))}))
 
+(defonce server-csrf-token (atom (str (java.util.UUID/randomUUID))))
+
+(defn get-csrf-token []
+  @server-csrf-token)
+
+(defn loopback-host? [host]
+  (boolean (and host (re-matches #"^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$" (str/trim (str host))))))
+
+(defn loopback-origin? [origin]
+  (boolean (and origin (re-matches #"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$" (str/trim (str origin))))))
+
+(defn get-header [headers name]
+  (when headers
+    (let [lname (str/lower-case name)]
+      (some (fn [[k v]]
+              (when (= (str/lower-case (clojure.core/name k)) lname)
+                v))
+            headers))))
+
+(defn valid-csrf? [headers body]
+  (let [token (get-csrf-token)
+        header-token (get-header headers "x-csrf-token")
+        body-token (try (:csrf_token (json/parse-string (or body "{}") true))
+                        (catch Exception _ nil))]
+    (or (= header-token token)
+        (= body-token token))))
+
 (defn api-state [root]
-  (if (forge/forge? root)
-    (forge-dashboard-state root)
-    (dashboard-state root)))
+  (assoc (if (forge/forge? root)
+           (forge-dashboard-state root)
+           (dashboard-state root))
+         :csrf_token (get-csrf-token)))
 
 (defn require-root! [root]
   (when (str/blank? root)
@@ -816,7 +844,10 @@
   root)
 
 (defn dashboard-page []
-  (slurp (str (fs/path script-dir "pack" "dashboard.html"))))
+  (let [raw (slurp (str (fs/path script-dir "pack" "dashboard.html")))
+        token (get-csrf-token)]
+    (str/replace raw "<meta name=\"csrf-token\" content=\"\">"
+                 (str "<meta name=\"csrf-token\" content=\"" token "\">\n<script>window.__CSRF_TOKEN__ = \"" token "\";</script>"))))
 
 (defn slug [s]
   (str/replace (or s "") #"[^A-Za-z0-9]+" "_"))
@@ -979,6 +1010,11 @@
 (defn create-task! [root name text]
   (when (str/blank? name)
     (throw (ex-info "Missing task name" {:http-status 400})))
+  (when (or (str/includes? name "/")
+            (str/includes? name "\\")
+            (str/includes? name "..")
+            (not (re-matches #"^[a-zA-Z0-9_.\s-]+$" (str/trim name))))
+    (throw (ex-info (str "Invalid task name: " name) {:http-status 400 :error "invalid-name"})))
   (let [task-id (new-task-id name)]
   (pack-board root "create"
               "--name" name
@@ -1737,12 +1773,24 @@
     (post-clarification (scoped-clar-root root uri) uri body)
     :else {:status 404 :body "Not found"}))
 
-(defn handle-request [root {:keys [method uri body]}]
+(defn handle-request [root {:keys [method uri body headers]}]
   (try
-    (case method
-      "GET" (handle-get root uri)
-      "POST" (handle-post root uri body)
-      {:status 404 :body "Not found"})
+    (let [host (get-header headers "host")
+          origin (get-header headers "origin")]
+      (when (and host (not (loopback-host? host)))
+        (throw (ex-info "Forbidden: invalid host" {:http-status 403})))
+      (when (and origin (not (loopback-origin? origin)))
+        (throw (ex-info "Forbidden: invalid origin" {:http-status 403})))
+      (when (and (= method "POST")
+                 (str/starts-with? (or uri "") "/api/")
+                 (seq headers)
+                 (or origin host)
+                 (not (valid-csrf? headers body)))
+        (throw (ex-info "Forbidden: invalid CSRF token" {:http-status 403})))
+      (case method
+        "GET" (handle-get root uri)
+        "POST" (handle-post root uri body)
+        {:status 404 :body "Not found"}))
     (catch Exception e
       (http-error (or (:http-status (ex-data e)) 500) (.getMessage e)))))
 
@@ -2053,7 +2101,8 @@
   (fn [req]
     (handle-request root {:method (str/upper-case (name (:request-method req)))
                           :uri (request-uri req)
-                          :body (request-body req)})))
+                          :body (request-body req)
+                          :headers (:headers req)})))
 
 (defn write-dashboard-url! [root url]
   (let [file (fs/path root ".swarmforge" "dashboard-url")]

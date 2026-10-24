@@ -1108,7 +1108,7 @@
       (let [result (run {:dir host
                          :env {"SWARMFORGE_BASE_DIR" (str base)
                                "SWARMFORGE_PACKS_DIR" (str packs)}}
-                        (str (fs/path repo-root "get-swarm-forge")))]
+                        (str (fs/path repo-root "get-swarm-forge")) "project-manager")]
         (is (zero? (:exit result)) (:err result))
         (is (= "host-readme\n" (slurp (str (fs/path host "README.md")))))
         (is (= "{:paths [\"test\"]}\n" (slurp (str (fs/path host "bb.edn")))))
@@ -1131,3 +1131,95 @@
         (fs/delete-tree base)
         (fs/delete-tree packs)))))
 
+
+(deftest project-name-rejects-path-traversal
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/scripts/keep") "keep\n")
+      (write-file (fs/path root "packs/four-pack/swarmforge/swarmforge.conf") "window specifier grok master\n")
+      (write-file (fs/path root "packs/four-pack/swarmforge/roles/specifier.prompt") "spec\n")
+      (let [result (run {:dir root :ok? false}
+                        "bb" "-e"
+                        (str "(load-file \"" (fs/path scripts-dir "forge.bb") "\") "
+                             "(forge/instantiate! \"" root "\" {:name \"../../traversed\" :pack \"four-pack\"})"))]
+        (is (not= 0 (:exit result)))
+        (is (str/includes? (:err result) "Invalid project name")))
+      (let [valid-result (run {:dir root :ok? true}
+                              "bb" "-e"
+                              (str "(load-file \"" (fs/path scripts-dir "forge.bb") "\") "
+                                   "(forge/instantiate! \"" root "\" {:name \"valid-proj_01\" :pack \"four-pack\"})"))]
+        (is (= 0 (:exit valid-result)))
+        (is (fs/exists? (fs/path root "projects" "valid-proj_01"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest task-name-rejects-path-traversal
+  (let [root (tmp-dir)]
+    (try
+      (let [result (run {:dir root :ok? false}
+                        "bb" (str (fs/path scripts-dir "pack_board.bb"))
+                        "create" "--root" (str root) "--name" "../escaped-task" "--lane" "specifier")]
+        (is (not= 0 (:exit result)))
+        (is (str/includes? (:err result) "Invalid task name"))
+        (is (not (fs/exists? (fs/path root "escaped-task.md"))))
+        (is (not (fs/exists? (fs/path root "tasks/../escaped-task.md")))))
+      (let [result (run {:dir root :ok? false}
+                        "bb" (str (fs/path scripts-dir "pack_board.bb"))
+                        "create" "--root" (str root) "--name" "bad task name!" "--lane" "specifier")]
+        (is (not= 0 (:exit result)))
+        (is (str/includes? (:err result) "Invalid task name")))
+      (let [result (run {:dir root :ok? true}
+                        "bb" (str (fs/path scripts-dir "pack_board.bb"))
+                        "create" "--root" (str root) "--name" "Holy Hand Grenade" "--lane" "specifier")]
+        (is (= 0 (:exit result)))
+        (is (fs/exists? (fs/path root "tasks/Holy Hand Grenade.md"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest dashboard-rejects-unauthorized-origin-host-and-missing-csrf
+  (let [root (tmp-dir)]
+    (try
+      (let [res-origin (run {:dir root :ok? true}
+                            "bb" "-e"
+                            (str "(load-file \"" (fs/path scripts-dir "pack_web.bb") "\") "
+                                 "(println (pr-str (pack-web/handle-request \"" root "\" "
+                                 "{:method \"POST\" :uri \"/api/tasks\" :body \"{}\" "
+                                 ":headers {\"host\" \"127.0.0.1:8080\" \"origin\" \"http://evil.com\"}})))"))]
+        (is (str/includes? (:out res-origin) ":status 403"))
+        (is (str/includes? (:out res-origin) "Forbidden: invalid origin")))
+      (let [res-host (run {:dir root :ok? true}
+                          "bb" "-e"
+                          (str "(load-file \"" (fs/path scripts-dir "pack_web.bb") "\") "
+                               "(println (pr-str (pack-web/handle-request \"" root "\" "
+                               "{:method \"POST\" :uri \"/api/tasks\" :body \"{}\" "
+                               ":headers {\"host\" \"evil.com\" \"origin\" \"http://127.0.0.1:8080\"}})))"))]
+        (is (str/includes? (:out res-host) ":status 403"))
+        (is (str/includes? (:out res-host) "Forbidden: invalid host")))
+      (let [res-csrf (run {:dir root :ok? true}
+                          "bb" "-e"
+                          (str "(load-file \"" (fs/path scripts-dir "pack_web.bb") "\") "
+                               "(println (pr-str (pack-web/handle-request \"" root "\" "
+                               "{:method \"POST\" :uri \"/api/tasks\" :body \"{}\" "
+                               ":headers {\"host\" \"127.0.0.1:8080\" \"origin\" \"http://127.0.0.1:8080\"}})))"))]
+        (is (str/includes? (:out res-csrf) ":status 403"))
+        (is (str/includes? (:out res-csrf) "Forbidden: invalid CSRF token")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest extra-args-escapes-shell-metacharacters
+  (let [res (run {:dir repo-root :ok? true}
+                 "bb" "-e"
+                 (str "(load-file \"" (fs/path scripts-dir "swarmforge.bb") "\") "
+                      "(println (swarmforge/extra-args-prefix {:extra-args \"; touch /tmp/pwned ;\"}))"))]
+    (is (= "';' 'touch' '/tmp/pwned' ';' \n" (:out res)))))
+
+(deftest terminal-backend-allowlist
+  (let [res-bb (run {:dir repo-root :ok? true}
+                    "bb" "-e"
+                    (str "(load-file \"" (fs/path scripts-dir "swarmforge.bb") "\") "
+                         "(println (swarmforge/normalize-terminal-backend \"../../../../tmp/malicious\"))"))]
+    (is (= "none\n" (:out res-bb))))
+  (let [res-sh (run {:dir repo-root :env {"SWARMFORGE_TERMINAL" "../../../../tmp/malicious"} :ok? true}
+                    "zsh" "-c"
+                    (str "source \"" (fs/path scripts-dir "swarm-terminal-adapter.sh") "\" && detect_terminal_backend"))]
+    (is (= "none\n" (:out res-sh)))))

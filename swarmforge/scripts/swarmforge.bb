@@ -42,13 +42,18 @@
 (defn sq [value]
   (str "'" (str/replace (str value) #"'" "'\"'\"'") "'"))
 
+(def known-terminal-backends #{"ghostty" "iterm2" "terminal-app" "windows-terminal" "none"})
+
 (defn normalize-terminal-backend [backend]
-  (case (str/lower-case backend)
-    ("iterm" "iterm2" "iterm.app") "iterm2"
-    ("terminal" "terminal-app" "terminal.app") "terminal-app"
-    ("windows" "windows-terminal" "wt") "windows-terminal"
-    ("none" "current" "fallback") "none"
-    (str/lower-case backend)))
+  (let [b (str/lower-case (or backend ""))]
+    (case b
+      ("iterm" "iterm2" "iterm.app") "iterm2"
+      ("terminal" "terminal-app" "terminal.app") "terminal-app"
+      ("windows" "windows-terminal" "wt") "windows-terminal"
+      ("none" "current" "fallback") "none"
+      (if (known-terminal-backends b)
+        b
+        "none"))))
 
 (defn detect-terminal-backend []
   (if-let [backend (System/getenv "SWARMFORGE_TERMINAL")]
@@ -458,9 +463,22 @@
                "\n"
                (tool-startup-section role last-role?)))))
 
+(defn safe-flag-or-arg? [token]
+  (boolean (re-matches #"^--?[a-zA-Z0-9_.-]+$" token)))
+
+(defn sanitize-token [token]
+  (if (safe-flag-or-arg? token)
+    token
+    (sq token)))
+
 (defn extra-args-prefix [row]
   (let [args (:extra-args row)]
-    (if (str/blank? args) "" (str args " "))))
+    (if (str/blank? args)
+      ""
+      (let [tokens (filterv (complement str/blank?) (str/split (str/trim args) #"\s+"))]
+        (if (empty? tokens)
+          ""
+          (str (str/join " " (map sanitize-token tokens)) " "))))))
 
 (defn extra-has? [row needle]
   (str/includes? (or (:extra-args row) "") needle))

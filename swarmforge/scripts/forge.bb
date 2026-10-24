@@ -23,8 +23,14 @@
 (defn pack-dir [root pack]
   (fs/path (packs-dir root) pack))
 
+(defn valid-project-name? [name]
+  (boolean (and (string? name) (re-matches #"^[a-zA-Z0-9_-]+$" (str/trim name)))))
+
 (defn project-dir [root name]
-  (fs/path (projects-dir root) name))
+  (let [trimmed (str/trim (or name ""))]
+    (when-not (valid-project-name? trimmed)
+      (throw (ex-info (str "Invalid project name: " name) {:http-status 400 :error "invalid-name"})))
+    (fs/path (projects-dir root) trimmed)))
 
 (defn inferred-name
   ([input] (inferred-name input false))
@@ -180,10 +186,11 @@
     dest))
 
 (defn instantiate! [forge {:keys [name github pack conf mission]}]
-  (let [dir-name (inferred-name name (boolean github))
-        dest (project-dir forge dir-name)]
-    (when (str/blank? dir-name)
-      (throw (ex-info "Missing project name" {:http-status 400})))
+  (let [dir-name (inferred-name name (boolean github))]
+    (when (or (str/blank? dir-name)
+              (not (valid-project-name? dir-name)))
+      (throw (ex-info (str "Invalid project name: " dir-name) {:http-status 400 :error "invalid-name"})))
+    (let [dest (project-dir forge dir-name)]
     (when (str/blank? pack)
       (throw (ex-info "Missing pack" {:http-status 400})))
     (when-not (fs/directory? (pack-dir forge pack))
@@ -205,7 +212,7 @@
     (write-pack-name! dest pack)
     (when-not github
       (init-git-if-needed! dest))
-    {:name dir-name :path (str dest)}))
+    {:name dir-name :path (str dest)})))
 
 (defn refresh! [forge name]
   (let [dest (project-dir forge name)

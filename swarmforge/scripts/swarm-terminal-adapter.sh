@@ -15,11 +15,14 @@ normalize_terminal_backend() {
     windows|windows-terminal|wt)
       echo "windows-terminal"
       ;;
+    ghostty)
+      echo "ghostty"
+      ;;
     none|current|fallback)
       echo "none"
       ;;
     *)
-      echo "$backend"
+      echo "none"
       ;;
   esac
 }
@@ -49,6 +52,15 @@ detect_terminal_backend() {
 
 load_terminal_backend() {
   local backend="$1"
+
+  case "$backend" in
+    ghostty|iterm2|terminal-app|windows-terminal|none) ;;
+    *)
+      echo "Terminal backend '$backend' is not in allowlist." >&2
+      return 1
+      ;;
+  esac
+
   local adapter_file="$TERMINAL_ADAPTERS_DIR/$backend.sh"
 
   if [[ ! -r "$adapter_file" ]]; then
